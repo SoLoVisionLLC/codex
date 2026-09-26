@@ -127,6 +127,12 @@ enum RealtimeConversationEnd {
     Error,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RealtimeExecutionPolicy {
+    Allow,
+    Deny,
+}
+
 enum RealtimeFanoutTaskStop {
     Await,
     Detach,
@@ -139,10 +145,10 @@ struct RealtimeHandoffAdmission {
 }
 
 impl RealtimeHandoffAdmission {
-    fn new() -> Self {
+    fn new(policy: RealtimeExecutionPolicy) -> Self {
         Self {
             gate: Semaphore::new(1),
-            retired: AtomicBool::new(false),
+            retired: AtomicBool::new(policy == RealtimeExecutionPolicy::Deny),
         }
     }
 
@@ -527,6 +533,7 @@ struct RealtimeStart {
     http_client_factory: HttpClientFactory,
     realtime_sideband_base_url: Option<String>,
     extra_headers: Option<HeaderMap>,
+    execution_policy: RealtimeExecutionPolicy,
     client_managed_handoffs: bool,
     flush_transcript_tail_on_session_end: bool,
     codex_responses_as_items: bool,
@@ -635,6 +642,7 @@ impl RealtimeConversationManager {
             http_client_factory,
             realtime_sideband_base_url,
             extra_headers,
+            execution_policy,
             client_managed_handoffs,
             flush_transcript_tail_on_session_end,
             codex_responses_as_items,
@@ -665,7 +673,8 @@ impl RealtimeConversationManager {
         let (transcript_tail_tx, transcript_tail_rx) = async_channel::bounded::<String>(1);
 
         let realtime_active = Arc::new(AtomicBool::new(true));
-        let route_handoffs = Arc::new(RealtimeHandoffAdmission::new());
+        // Immutable for this session: queued events and close/reconnect cannot reopen it.
+        let route_handoffs = Arc::new(RealtimeHandoffAdmission::new(execution_policy));
         let stop_token = CancellationToken::new();
         let handoff = RealtimeHandoffState {
             output_tx: handoff_output_tx,
@@ -1254,8 +1263,9 @@ pub(crate) async fn handle_start(
     sess: &Arc<Session>,
     sub_id: String,
     params: ConversationStartParams,
+    execution_policy: RealtimeExecutionPolicy,
 ) -> CodexResult<()> {
-    let prepared_start = match prepare_realtime_start(sess, params).await {
+    let prepared_start = match prepare_realtime_start(sess, params, execution_policy).await {
         Ok(prepared_start) => prepared_start,
         Err(err) => {
             error!("failed to prepare realtime conversation: {err}");
@@ -1290,6 +1300,7 @@ struct PreparedRealtimeConversationStart {
     http_client_factory: HttpClientFactory,
     realtime_sideband_base_url: Option<String>,
     extra_headers: Option<HeaderMap>,
+    execution_policy: RealtimeExecutionPolicy,
     client_managed_handoffs: bool,
     flush_transcript_tail_on_session_end: bool,
     codex_responses_as_items: bool,
@@ -1315,6 +1326,7 @@ pub(crate) enum ConfiguredRealtimeVoice {
 async fn prepare_realtime_start(
     sess: &Arc<Session>,
     params: ConversationStartParams,
+    execution_policy: RealtimeExecutionPolicy,
 ) -> CodexResult<PreparedRealtimeConversationStart> {
     let provider = sess.provider().await;
     let auth_manager = sess
@@ -1442,6 +1454,7 @@ async fn prepare_realtime_start(
         http_client_factory,
         realtime_sideband_base_url,
         extra_headers: Some(extra_headers),
+        execution_policy,
         client_managed_handoffs: params.client_managed_handoffs,
         flush_transcript_tail_on_session_end: params.flush_transcript_tail_on_session_end,
         codex_responses_as_items: params.codex_responses_as_items,
@@ -1666,6 +1679,7 @@ async fn handle_start_inner(
         http_client_factory,
         realtime_sideband_base_url,
         extra_headers,
+        execution_policy,
         client_managed_handoffs,
         flush_transcript_tail_on_session_end,
         codex_responses_as_items,
@@ -1696,6 +1710,7 @@ async fn handle_start_inner(
         http_client_factory,
         realtime_sideband_base_url,
         extra_headers,
+        execution_policy,
         client_managed_handoffs,
         flush_transcript_tail_on_session_end,
         codex_responses_as_items,

@@ -196,6 +196,11 @@ impl From<ThreadRealtimeAudioChunk> for CoreRealtimeAudioFrame {
 #[ts(export_to = "v2/")]
 pub struct ThreadRealtimeStartParams {
     pub thread_id: String,
+    /// Server-enforced: realtime handoffs and transcript tails cannot start Codex turns.
+    /// Clients MUST require `noExecutionEnforced: true` in the start response; an older
+    /// server may silently ignore this unknown request field.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_execution: bool,
     /// Leaves Codex response handoffs to the client's explicit append calls instead of forwarding
     /// them automatically. Defaults to false.
     #[ts(optional = nullable)]
@@ -298,7 +303,10 @@ pub enum ThreadRealtimeStartTransport {
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-pub struct ThreadRealtimeStartResponse {}
+pub struct ThreadRealtimeStartResponse {
+    /// Explicit acknowledgement. Missing/false means the client MUST refuse the session.
+    pub no_execution_enforced: bool,
+}
 
 /// EXPERIMENTAL - append audio input to thread realtime.
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS)]

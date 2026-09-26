@@ -429,6 +429,12 @@ pub(super) async fn submission_loop(
             debug!(?sub, "Submission");
         }
         let dispatch_span = submission_dispatch_span(&sub);
+        let realtime_execution_policy = match &sub.op {
+            Op::RealtimeConversationStartNoExecution(_) => {
+                crate::realtime_conversation::RealtimeExecutionPolicy::Deny
+            }
+            _ => crate::realtime_conversation::RealtimeExecutionPolicy::Allow,
+        };
         let should_exit = async {
             match sub.op {
                 Op::Interrupt => {
@@ -444,9 +450,15 @@ pub(super) async fn submission_loop(
                     clean_background_terminals(&sess).await;
                     false
                 }
-                Op::RealtimeConversationStart(params) => {
-                    if let Err(err) =
-                        handle_realtime_conversation_start(&sess, sub.id.clone(), params).await
+                Op::RealtimeConversationStart(params)
+                | Op::RealtimeConversationStartNoExecution(params) => {
+                    if let Err(err) = handle_realtime_conversation_start(
+                        &sess,
+                        sub.id.clone(),
+                        params,
+                        realtime_execution_policy,
+                    )
+                    .await
                     {
                         sess.send_event_raw(Event {
                             id: sub.id.clone(),
