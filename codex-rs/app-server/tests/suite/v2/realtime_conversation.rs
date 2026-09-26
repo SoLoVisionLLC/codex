@@ -3269,13 +3269,16 @@ async fn webrtc_v3_no_execution_blocks_handoff_and_tail() -> Result<()> {
         timeout(DEFAULT_TIMEOUT, harness.mcp.read_response(stop_id)).await??;
     let _: ThreadRealtimeClosedNotification =
         harness.read_notification("thread/realtime/closed").await?;
+    let pending = harness.mcp.pending_notification_methods();
     assert!(
-        !harness
-            .mcp
-            .pending_notification_methods()
+        !pending.iter().any(|method| method == "turn/started"),
+        "a realtime delegation must not start a Codex turn: {pending:?}"
+    );
+    assert!(
+        !pending
             .iter()
-            .any(|method| method == "turn/started"),
-        "a realtime delegation must not start a Codex turn"
+            .any(|method| method == "item/started" || method == "item/completed"),
+        "no Codex tool call may start or complete: {pending:?}"
     );
     assert!(harness.main_loop_responses_requests().await?.is_empty());
     harness.shutdown().await;
