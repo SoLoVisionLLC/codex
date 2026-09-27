@@ -78,6 +78,7 @@ use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::Mutex;
 use tokio::sync::Semaphore;
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -1264,10 +1265,15 @@ pub(crate) async fn handle_start(
     sub_id: String,
     params: ConversationStartParams,
     execution_policy: RealtimeExecutionPolicy,
+    installation_reply: Option<oneshot::Sender<Result<(), String>>>,
 ) -> CodexResult<()> {
+    let mut installation_reply = installation_reply;
     let prepared_start = match prepare_realtime_start(sess, params, execution_policy).await {
         Ok(prepared_start) => prepared_start,
         Err(err) => {
+            if let Some(reply) = installation_reply.take() {
+                let _ = reply.send(Err(err.to_string()));
+            }
             error!("failed to prepare realtime conversation: {err}");
             let message = err.to_string();
             sess.send_event_raw(Event {
@@ -1281,7 +1287,7 @@ pub(crate) async fn handle_start(
         }
     };
 
-    if let Err(err) = handle_start_inner(sess, &sub_id, prepared_start).await {
+    if let Err(err) = handle_start_inner(sess, &sub_id, prepared_start, installation_reply).await {
         error!("failed to start realtime conversation: {err}");
         let message = err.to_string();
         sess.send_event_raw(Event {
@@ -1673,6 +1679,7 @@ async fn handle_start_inner(
     sess: &Arc<Session>,
     sub_id: &str,
     prepared_start: PreparedRealtimeConversationStart,
+    installation_reply: Option<oneshot::Sender<Result<(), String>>>,
 ) -> CodexResult<()> {
     let PreparedRealtimeConversationStart {
         api_provider,
@@ -1724,7 +1731,24 @@ async fn handle_start_inner(
         sdp,
         existing_call_id,
     };
-    let start_output = sess.conversation.start(start, mode_instructions).await?;
+    let start_output = match sess.conversation.start(start, mode_instructions).await {
+        Ok(output) => output,
+        Err(err) => {
+            if let Some(reply) = installation_reply {
+                let _ = reply.send(Err(err.to_string()));
+            }
+            return Err(err);
+        }
+    };
+
+    // The deny admission now exists. Never acknowledge mere queue acceptance.
+    // A caller that timed out must not leave an orphan session running.
+    if let Some(reply) = installation_reply
+        && reply.send(Ok(())).is_err()
+    {
+        handle_close(sess, sub_id.to_string()).await;
+        return Ok(());
+    }
 
     info!("realtime conversation started");
 

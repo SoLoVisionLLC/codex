@@ -9,6 +9,11 @@ or timed-out acknowledgement means stop/discard the session and fail closed.
 Older servers may ignore unknown request fields and return `{}`; that response
 is NOT an acknowledgement. This option defaults to false and is independent of
 `clientManagedHandoffs` (which controls response forwarding, not execution).
+The server waits for Core to install the deny admission before returning this
+acknowledgement; merely queuing the start is insufficient. Core installation
+failure returns a JSON-RPC error. If installation does not confirm within 30
+seconds, the server fails the request; Core closes a session that starts after
+its confirmation receiver has been dropped.
 
 When true, the core creates a permanently retired per-session handoff-admission
 gate before any realtime event is consumed. Both delegation handoffs and the

@@ -430,7 +430,7 @@ pub(super) async fn submission_loop(
         }
         let dispatch_span = submission_dispatch_span(&sub);
         let realtime_execution_policy = match &sub.op {
-            Op::RealtimeConversationStartNoExecution(_) => {
+            Op::RealtimeConversationStartNoExecution { .. } => {
                 crate::realtime_conversation::RealtimeExecutionPolicy::Deny
             }
             _ => crate::realtime_conversation::RealtimeExecutionPolicy::Allow,
@@ -450,13 +450,35 @@ pub(super) async fn submission_loop(
                     clean_background_terminals(&sess).await;
                     false
                 }
-                Op::RealtimeConversationStart(params)
-                | Op::RealtimeConversationStartNoExecution(params) => {
+                Op::RealtimeConversationStart(params) => {
                     if let Err(err) = handle_realtime_conversation_start(
                         &sess,
                         sub.id.clone(),
                         params,
                         realtime_execution_policy,
+                        None,
+                    )
+                    .await
+                    {
+                        sess.send_event_raw(Event {
+                            id: sub.id.clone(),
+                            msg: EventMsg::Error(ErrorEvent {
+                                misalignment: None,
+                                message: err.to_string(),
+                                codex_error_info: Some(CodexErrorInfo::Other),
+                            }),
+                        })
+                        .await;
+                    }
+                    false
+                }
+                Op::RealtimeConversationStartNoExecution { params, reply } => {
+                    if let Err(err) = handle_realtime_conversation_start(
+                        &sess,
+                        sub.id.clone(),
+                        params,
+                        realtime_execution_policy,
+                        Some(reply),
                     )
                     .await
                     {

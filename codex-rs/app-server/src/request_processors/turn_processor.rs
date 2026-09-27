@@ -1276,7 +1276,33 @@ impl TurnRequestProcessor {
             voice: params.voice,
         };
         let op = if no_execution {
-            Op::RealtimeConversationStartNoExecution(start)
+            let (reply, installed) = tokio::sync::oneshot::channel();
+            self.submit_core_op(
+                request_id,
+                thread.as_ref(),
+                Op::RealtimeConversationStartNoExecution {
+                    params: start,
+                    reply,
+                },
+            )
+            .await
+            .map_err(|err| {
+                internal_error(format!("failed to queue realtime conversation: {err}"))
+            })?;
+            let result = tokio::time::timeout(std::time::Duration::from_secs(30), installed)
+                .await
+                .map_err(|_| {
+                    internal_error("timed out waiting for realtime no-execution admission")
+                })?
+                .map_err(|_| internal_error("realtime no-execution admission confirmation lost"))?;
+            result.map_err(|err| {
+                internal_error(format!(
+                    "failed to install realtime no-execution admission: {err}"
+                ))
+            })?;
+            return Ok(Some(ThreadRealtimeStartResponse {
+                no_execution_enforced: true,
+            }));
         } else {
             Op::RealtimeConversationStart(start)
         };

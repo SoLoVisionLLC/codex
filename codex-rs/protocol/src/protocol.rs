@@ -606,7 +606,11 @@ pub enum Op {
     /// Start a realtime conversation stream.
     RealtimeConversationStart(ConversationStartParams),
     /// Realtime session with ingress to Codex turns permanently disabled.
-    RealtimeConversationStartNoExecution(ConversationStartParams),
+    RealtimeConversationStartNoExecution {
+        params: ConversationStartParams,
+        /// Resolves only after Core installs the deny admission policy.
+        reply: oneshot::Sender<Result<(), String>>,
+    },
 
     /// Send audio input to the running realtime conversation stream.
     RealtimeConversationAudio(ConversationAudioParams),
@@ -938,7 +942,7 @@ impl Op {
             Self::InterruptIfNoPendingInput { .. } => "interrupt_if_no_pending_input",
             Self::CleanBackgroundTerminals => "clean_background_terminals",
             Self::RealtimeConversationStart(_) => "realtime_conversation_start",
-            Self::RealtimeConversationStartNoExecution(_) => {
+            Self::RealtimeConversationStartNoExecution { .. } => {
                 "realtime_conversation_start_no_execution"
             }
             Self::RealtimeConversationAudio(_) => "realtime_conversation_audio",
