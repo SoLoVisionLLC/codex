@@ -4007,6 +4007,7 @@ mod tests {
         let request = ClientRequest::ThreadRealtimeStart {
             request_id: RequestId::Integer(9),
             params: v2::ThreadRealtimeStartParams {
+                no_execution: false,
                 client_managed_handoffs: Some(true),
                 delegation_ack_filler: Some(false),
                 flush_transcript_tail_on_session_end: Some(true),
@@ -4090,10 +4091,27 @@ mod tests {
     }
 
     #[test]
+    fn no_execution_requires_explicit_server_acknowledgement() -> Result<()> {
+        let old_server_response = json!({});
+        assert!(
+            serde_json::from_value::<v2::ThreadRealtimeStartResponse>(old_server_response).is_err(),
+            "older servers must not silently acknowledge the gate"
+        );
+        let denied: v2::ThreadRealtimeStartResponse =
+            serde_json::from_value(json!({"noExecutionEnforced": false}))?;
+        assert!(!denied.no_execution_enforced);
+        let acknowledged: v2::ThreadRealtimeStartResponse =
+            serde_json::from_value(json!({"noExecutionEnforced": true}))?;
+        assert!(acknowledged.no_execution_enforced);
+        Ok(())
+    }
+
+    #[test]
     fn serialize_thread_realtime_start_prompt_default_and_null() -> Result<()> {
         let default_prompt_request = ClientRequest::ThreadRealtimeStart {
             request_id: RequestId::Integer(9),
             params: v2::ThreadRealtimeStartParams {
+                no_execution: false,
                 client_managed_handoffs: None,
                 delegation_ack_filler: None,
                 flush_transcript_tail_on_session_end: None,
@@ -4147,6 +4165,7 @@ mod tests {
         let null_prompt_request = ClientRequest::ThreadRealtimeStart {
             request_id: RequestId::Integer(9),
             params: v2::ThreadRealtimeStartParams {
+                no_execution: false,
                 client_managed_handoffs: None,
                 delegation_ack_filler: None,
                 flush_transcript_tail_on_session_end: None,
@@ -4401,6 +4420,7 @@ mod tests {
         let request = ClientRequest::ThreadRealtimeStart {
             request_id: RequestId::Integer(1),
             params: v2::ThreadRealtimeStartParams {
+                no_execution: false,
                 client_managed_handoffs: None,
                 delegation_ack_filler: None,
                 flush_transcript_tail_on_session_end: None,

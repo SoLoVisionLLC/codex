@@ -1,3 +1,29 @@
+# Realtime no-execution start (experimental)
+
+Clients that must not launch a Codex task send `thread/realtime/start` with
+`noExecution: true` and the usual `threadId`, `version: "v3"`, and WebRTC offer
+`transport: {type: "webrtc", sdp: "..."}`. The start response MUST contain
+`noExecutionEnforced: true`; wait for `thread/realtime/started` and
+`thread/realtime/sdp` before accepting the session. Missing, false, malformed,
+or timed-out acknowledgement means stop/discard the session and fail closed.
+Older servers may ignore unknown request fields and return `{}`; that response
+is NOT an acknowledgement. This option defaults to false and is independent of
+`clientManagedHandoffs` (which controls response forwarding, not execution).
+The server waits for Core to install the deny admission before returning this
+acknowledgement; merely queuing the start is insufficient. Core installation
+failure returns a JSON-RPC error. If installation does not confirm within 30
+seconds, the server fails the request; Core closes a session that starts after
+its confirmation receiver has been dropped.
+
+When true, the core creates a permanently retired per-session handoff-admission
+gate before any realtime event is consumed. Both delegation handoffs and the
+remaining transcript tail pass through that gate; neither can enter a Codex
+turn or call Codex tools, including during close/restart. Explicit `turn/start`
+on the same thread is **not** blocked; clients requiring no execution must not
+submit separate turn requests. Realtime backend inference and SDP negotiation
+are still active. This experimental contract does not grant voice capability or
+enable any third-party broker by itself.
+
 # Model catalog provider requirements
 
 `model/list` and periodic model catalog refreshes check the startup provider against

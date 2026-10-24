@@ -78,6 +78,7 @@ use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::Mutex;
 use tokio::sync::Semaphore;
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -127,6 +128,12 @@ enum RealtimeConversationEnd {
     Error,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RealtimeExecutionPolicy {
+    Allow,
+    Deny,
+}
+
 enum RealtimeFanoutTaskStop {
     Await,
     Detach,
@@ -139,10 +146,10 @@ struct RealtimeHandoffAdmission {
 }
 
 impl RealtimeHandoffAdmission {
-    fn new() -> Self {
+    fn new(policy: RealtimeExecutionPolicy) -> Self {
         Self {
             gate: Semaphore::new(1),
-            retired: AtomicBool::new(false),
+            retired: AtomicBool::new(policy == RealtimeExecutionPolicy::Deny),
         }
     }
 
@@ -527,6 +534,7 @@ struct RealtimeStart {
     http_client_factory: HttpClientFactory,
     realtime_sideband_base_url: Option<String>,
     extra_headers: Option<HeaderMap>,
+    execution_policy: RealtimeExecutionPolicy,
     client_managed_handoffs: bool,
     flush_transcript_tail_on_session_end: bool,
     codex_responses_as_items: bool,
@@ -635,6 +643,7 @@ impl RealtimeConversationManager {
             http_client_factory,
             realtime_sideband_base_url,
             extra_headers,
+            execution_policy,
             client_managed_handoffs,
             flush_transcript_tail_on_session_end,
             codex_responses_as_items,
@@ -665,7 +674,8 @@ impl RealtimeConversationManager {
         let (transcript_tail_tx, transcript_tail_rx) = async_channel::bounded::<String>(1);
 
         let realtime_active = Arc::new(AtomicBool::new(true));
-        let route_handoffs = Arc::new(RealtimeHandoffAdmission::new());
+        // Immutable for this session: queued events and close/reconnect cannot reopen it.
+        let route_handoffs = Arc::new(RealtimeHandoffAdmission::new(execution_policy));
         let stop_token = CancellationToken::new();
         let handoff = RealtimeHandoffState {
             output_tx: handoff_output_tx,
@@ -1254,10 +1264,16 @@ pub(crate) async fn handle_start(
     sess: &Arc<Session>,
     sub_id: String,
     params: ConversationStartParams,
+    execution_policy: RealtimeExecutionPolicy,
+    installation_reply: Option<oneshot::Sender<Result<(), String>>>,
 ) -> CodexResult<()> {
-    let prepared_start = match prepare_realtime_start(sess, params).await {
+    let mut installation_reply = installation_reply;
+    let prepared_start = match prepare_realtime_start(sess, params, execution_policy).await {
         Ok(prepared_start) => prepared_start,
         Err(err) => {
+            if let Some(reply) = installation_reply.take() {
+                let _ = reply.send(Err(err.to_string()));
+            }
             error!("failed to prepare realtime conversation: {err}");
             let message = err.to_string();
             sess.send_event_raw(Event {
@@ -1271,7 +1287,7 @@ pub(crate) async fn handle_start(
         }
     };
 
-    if let Err(err) = handle_start_inner(sess, &sub_id, prepared_start).await {
+    if let Err(err) = handle_start_inner(sess, &sub_id, prepared_start, installation_reply).await {
         error!("failed to start realtime conversation: {err}");
         let message = err.to_string();
         sess.send_event_raw(Event {
@@ -1290,6 +1306,7 @@ struct PreparedRealtimeConversationStart {
     http_client_factory: HttpClientFactory,
     realtime_sideband_base_url: Option<String>,
     extra_headers: Option<HeaderMap>,
+    execution_policy: RealtimeExecutionPolicy,
     client_managed_handoffs: bool,
     flush_transcript_tail_on_session_end: bool,
     codex_responses_as_items: bool,
@@ -1315,6 +1332,7 @@ pub(crate) enum ConfiguredRealtimeVoice {
 async fn prepare_realtime_start(
     sess: &Arc<Session>,
     params: ConversationStartParams,
+    execution_policy: RealtimeExecutionPolicy,
 ) -> CodexResult<PreparedRealtimeConversationStart> {
     let provider = sess.provider().await;
     let auth_manager = sess
@@ -1442,6 +1460,7 @@ async fn prepare_realtime_start(
         http_client_factory,
         realtime_sideband_base_url,
         extra_headers: Some(extra_headers),
+        execution_policy,
         client_managed_handoffs: params.client_managed_handoffs,
         flush_transcript_tail_on_session_end: params.flush_transcript_tail_on_session_end,
         codex_responses_as_items: params.codex_responses_as_items,
@@ -1660,12 +1679,14 @@ async fn handle_start_inner(
     sess: &Arc<Session>,
     sub_id: &str,
     prepared_start: PreparedRealtimeConversationStart,
+    installation_reply: Option<oneshot::Sender<Result<(), String>>>,
 ) -> CodexResult<()> {
     let PreparedRealtimeConversationStart {
         api_provider,
         http_client_factory,
         realtime_sideband_base_url,
         extra_headers,
+        execution_policy,
         client_managed_handoffs,
         flush_transcript_tail_on_session_end,
         codex_responses_as_items,
@@ -1696,6 +1717,7 @@ async fn handle_start_inner(
         http_client_factory,
         realtime_sideband_base_url,
         extra_headers,
+        execution_policy,
         client_managed_handoffs,
         flush_transcript_tail_on_session_end,
         codex_responses_as_items,
@@ -1709,7 +1731,24 @@ async fn handle_start_inner(
         sdp,
         existing_call_id,
     };
-    let start_output = sess.conversation.start(start, mode_instructions).await?;
+    let start_output = match sess.conversation.start(start, mode_instructions).await {
+        Ok(output) => output,
+        Err(err) => {
+            if let Some(reply) = installation_reply {
+                let _ = reply.send(Err(err.to_string()));
+            }
+            return Err(err);
+        }
+    };
+
+    // The deny admission now exists. Never acknowledge mere queue acceptance.
+    // A caller that timed out must not leave an orphan session running.
+    if let Some(reply) = installation_reply
+        && reply.send(Ok(())).is_err()
+    {
+        handle_close(sess, sub_id.to_string()).await;
+        return Ok(());
+    }
 
     info!("realtime conversation started");
 

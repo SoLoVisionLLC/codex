@@ -1,5 +1,7 @@
 use super::AGENT_FINAL_MESSAGE_PREFIX;
 use super::HANDOFF_STREAM_TRUNCATION_MARKER;
+use super::RealtimeExecutionPolicy;
+use super::RealtimeHandoffAdmission;
 use super::RealtimeHandoffState;
 use super::RealtimeInputTaskExit;
 use super::RealtimeOutbound;
@@ -25,8 +27,25 @@ use codex_protocol::protocol::RealtimeTranscriptEntry;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 use tokio::sync::Mutex;
+
+#[tokio::test]
+async fn no_execution_admission_stays_retired_across_close_and_restart() {
+    let denied = RealtimeHandoffAdmission::new(RealtimeExecutionPolicy::Deny);
+    assert!(denied.retired.load(Ordering::Acquire));
+    denied.retire().await;
+    assert!(denied.retired.load(Ordering::Acquire));
+
+    let restarted = RealtimeHandoffAdmission::new(RealtimeExecutionPolicy::Deny);
+    assert!(restarted.retired.load(Ordering::Acquire));
+
+    let allowed = RealtimeHandoffAdmission::new(RealtimeExecutionPolicy::Allow);
+    assert!(!allowed.retired.load(Ordering::Acquire));
+    allowed.retire().await;
+    assert!(allowed.retired.load(Ordering::Acquire));
+}
 
 #[test]
 fn prefers_handoff_input_transcript_over_active_transcript() {
